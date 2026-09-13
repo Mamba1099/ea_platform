@@ -31,11 +31,7 @@ class MT5Runtime:
     ) -> None:
         self.terminal_path = Path(terminal_path).expanduser()
         self.wine_binary = wine_binary
-        self.wine_prefix = (
-            Path(wine_prefix).expanduser()
-            if wine_prefix
-            else None
-        )
+        self.wine_prefix = Path(wine_prefix).expanduser() if wine_prefix else None
         self.startup_timeout = startup_timeout
 
         self._launcher_process: Optional[subprocess.Popen] = None
@@ -43,9 +39,7 @@ class MT5Runtime:
 
     def _validate_terminal(self) -> None:
         if not self.terminal_path.exists():
-            raise MT5RuntimeError(
-                f"MT5 terminal not found: {self.terminal_path}"
-            )
+            raise MT5RuntimeError(f"MT5 terminal not found: {self.terminal_path}")
 
         if not self.terminal_path.is_file():
             raise MT5RuntimeError(
@@ -111,8 +105,7 @@ class MT5Runtime:
 
     def _launcher_alive(self) -> bool:
         return (
-            self._launcher_process is not None
-            and self._launcher_process.poll() is None
+            self._launcher_process is not None and self._launcher_process.poll() is None
         )
 
     def start(self) -> int:
@@ -226,7 +219,6 @@ class MT5Runtime:
                 time.sleep(0.25)
 
             return False
-
 
     def is_running(self) -> bool:
         """Return True when terminal64.exe is running."""

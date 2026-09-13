@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 from uuid import uuid4
+import time
 
 from .protocol import (
     CommandResult,
@@ -181,6 +182,37 @@ class EAFileBridge:
             )
 
         return message
+
+    def wait_for_ack(
+        self,
+        ea_id: str,
+        request_id: str,
+        timeout: float = 5.0,
+        poll_interval: float = 0.25,
+    ) -> EACommandAck:
+        """
+        Wait for the EA to acknowledge a command.
+
+        Raises:
+            FileBridgeError: if the timeout expires.
+        """
+
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            ack = self.read_ack(
+                ea_id,
+                request_id,
+            )
+
+            if ack is not None:
+                return ack
+
+            time.sleep(poll_interval)
+
+        raise FileBridgeError(
+            f"Timed out waiting for EA ACK: " f"ea_id={ea_id}, request_id={request_id}"
+        )
 
     def read_ack(
         self,

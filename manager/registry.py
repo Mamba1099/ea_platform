@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Optional
@@ -5,6 +7,10 @@ from typing import Optional
 
 @dataclass
 class EAInstance:
+    """
+    Represents one EA registered with the management platform.
+    """
+
     ea_id: str
     name: str
     version: str
@@ -18,14 +24,18 @@ class EAInstance:
 
 class EARegistry:
     """
-    Registry for the EAs managed by the platform.
+    Central in-memory registry of managed EA instances.
 
-    At the moment the platform manages one EA:
-        AI_BASKET_EA
+    The registry stores platform-side state only.
+    It does not communicate with MT5 or the EA itself.
     """
 
     def __init__(self) -> None:
         self._instances: dict[str, EAInstance] = {}
+
+    # =========================================================
+    # REGISTRATION
+    # =========================================================
 
     def register(
         self,
@@ -35,13 +45,21 @@ class EARegistry:
         symbol: str,
         magic_number: int,
     ) -> EAInstance:
-        """Register a new EA instance."""
+        """
+        Register a new EA instance.
+        """
 
         if not ea_id.strip():
             raise ValueError("EA ID cannot be empty.")
 
         if ea_id in self._instances:
             raise ValueError(f"EA already registered: {ea_id}")
+
+        if not name.strip():
+            raise ValueError("EA name cannot be empty.")
+
+        if not symbol.strip():
+            raise ValueError("EA symbol cannot be empty.")
 
         if magic_number <= 0:
             raise ValueError("Magic number must be greater than zero.")
@@ -55,10 +73,20 @@ class EARegistry:
         )
 
         self._instances[ea_id] = instance
+
         return instance
 
-    def get(self, ea_id: str) -> EAInstance:
-        """Return a registered EA."""
+    # =========================================================
+    # LOOKUP
+    # =========================================================
+
+    def get(
+        self,
+        ea_id: str,
+    ) -> EAInstance:
+        """
+        Return a registered EA.
+        """
 
         instance = self._instances.get(ea_id)
 
@@ -67,39 +95,84 @@ class EARegistry:
 
         return instance
 
+    def exists(
+        self,
+        ea_id: str,
+    ) -> bool:
+        """
+        Return True when an EA is registered.
+        """
+
+        return ea_id in self._instances
+
     def list_all(self) -> list[EAInstance]:
-        """Return all registered EAs."""
+        """
+        Return all registered EA instances.
+        """
 
         return list(self._instances.values())
 
-    def set_status(self, ea_id: str, status: str) -> EAInstance:
-        """Update the operational status of an EA."""
+    # =========================================================
+    # STATE
+    # =========================================================
+
+    def set_status(
+        self,
+        ea_id: str,
+        status: str,
+    ) -> EAInstance:
+        """
+        Update the platform-side operational status.
+        """
 
         instance = self.get(ea_id)
         instance.status = status
+
         return instance
 
-    def set_enabled(self, ea_id: str, enabled: bool) -> EAInstance:
-        """Enable or disable trading for an EA."""
+    def set_enabled(
+        self,
+        ea_id: str,
+        enabled: bool,
+    ) -> EAInstance:
+        """
+        Update whether the EA is enabled for trading.
+        """
 
         instance = self.get(ea_id)
         instance.enabled = enabled
+
         return instance
 
-    def heartbeat(self, ea_id: str) -> EAInstance:
-        """Record the latest heartbeat time."""
+    def heartbeat(
+        self,
+        ea_id: str,
+    ) -> EAInstance:
+        """
+        Record a platform-side heartbeat timestamp.
+        """
 
         instance = self.get(ea_id)
+
         instance.heartbeat = datetime.now(timezone.utc).isoformat()
+
         return instance
 
-    def snapshot(self) -> list[dict]:
-        """Return registry data in API-friendly form."""
+    # =========================================================
+    # SNAPSHOT
+    # =========================================================
 
-        return [
-            asdict(instance)
-            for instance in self._instances.values()
-        ]
+    def snapshot(self) -> list[dict]:
+        """
+        Return registry state in API-friendly form.
+        """
+
+        return [asdict(instance) for instance in self._instances.values()]
+
+
+# =============================================================
+# INITIAL REGISTRY
+# =============================================================
 
 
 def create_registry() -> EARegistry:
