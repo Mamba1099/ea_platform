@@ -5,28 +5,6 @@ from registry import create_registry
 
 def main() -> None:
     registry = create_registry()
-    lifecycle = EALifecycleController(registry)
-
-    ea_id = "AI_BASKET_EA"
-
-    print("\nInitial state:")
-    print(registry.snapshot())
-
-    print("\nStarting EA...")
-    lifecycle.start(ea_id)
-    print(registry.snapshot())
-
-    print("\nPausing EA...")
-    lifecycle.pause(ea_id)
-    print(registry.snapshot())
-
-    print("\nResuming EA...")
-    lifecycle.resume(ea_id)
-    print(registry.snapshot())
-
-    print("\nStopping EA...")
-    lifecycle.stop(ea_id)
-    print(registry.snapshot())
 
     runtime = MT5Runtime(
         terminal_path=(
@@ -36,7 +14,31 @@ def main() -> None:
         wine_prefix="/home/mamba/.wine",
     )
 
-    print("\nMT5 runtime:")
+    lifecycle = EALifecycleController(
+        registry,
+        runtime,
+    )
+
+    ea_id = "AI_BASKET_EA"
+
+    print("\nInitial state:")
+    print(registry.snapshot())
+
+    print("\nRuntime before start:")
+    print(runtime.heartbeat())
+
+    print("\nStarting EA...")
+    lifecycle.start(ea_id)
+    print(registry.snapshot())
+
+    print("\nRuntime after start:")
+    print(runtime.heartbeat())
+
+    print("\nStopping EA...")
+    lifecycle.stop(ea_id)
+    print(registry.snapshot())
+
+    print("\nRuntime after stop:")
     print(runtime.heartbeat())
 
 

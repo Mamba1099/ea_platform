@@ -17,8 +17,9 @@ class MT5Runtime:
     """
     Linux/Wine runtime adapter for MetaTrader 5.
 
-    This class is responsible only for the MT5 terminal process.
-    EA lifecycle/state decisions remain in lifecycle.py.
+    The Wine launcher process may terminate after handing execution
+    to the actual terminal64.exe process, so runtime detection is
+    based on the MT5 process itself.
     """
 
     def __init__(
@@ -37,12 +38,8 @@ class MT5Runtime:
         )
         self.startup_timeout = startup_timeout
 
-        self._process: Optional[subprocess.Popen] = None
+        self._launcher_process: Optional[subprocess.Popen] = None
         self._lock = Lock()
-
-    # ---------------------------------------------------------
-    # INTERNAL
-    # ---------------------------------------------------------
 
     def _validate_terminal(self) -> None:
         if not self.terminal_path.exists():
@@ -63,20 +60,74 @@ class MT5Runtime:
 
         return env
 
-    # ---------------------------------------------------------
-    # PROCESS CONTROL
-    # ---------------------------------------------------------
+    def _find_terminal_pid(self) -> int:
+        """
+        Find the actual terminal64.exe process.
+
+        Wine may expose the Windows executable through
+        wineserver/wine-preloader, so we inspect the full
+        process command line.
+        """
+
+        try:
+            result = subprocess.run(
+                [
+                    "pgrep",
+                    "-af",
+                    "terminal64.exe",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return 0
+
+        if result.returncode != 0:
+            return 0
+
+        for line in result.stdout.splitlines():
+            line = line.strip()
+
+            if not line:
+                continue
+
+            parts = line.split(maxsplit=1)
+
+            if len(parts) != 2:
+                continue
+
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+
+            command_line = parts[1]
+
+            if command_line.lower().endswith("terminal64.exe"):
+                return pid
+
+        return 0
+
+    def _launcher_alive(self) -> bool:
+        return (
+            self._launcher_process is not None
+            and self._launcher_process.poll() is None
+        )
 
     def start(self) -> int:
         """
-        Start MT5 under Wine.
+        Start MetaTrader 5 under Wine.
 
         Returns:
-            PID of the Wine launcher process.
+            PID of the actual terminal64.exe process.
         """
+
         with self._lock:
-            if self.is_running():
-                return self.pid()
+            existing_pid = self._find_terminal_pid()
+
+            if existing_pid > 0:
+                return existing_pid
 
             self._validate_terminal()
 
@@ -86,7 +137,7 @@ class MT5Runtime:
             ]
 
             try:
-                self._process = subprocess.Popen(
+                self._launcher_process = subprocess.Popen(
                     command,
                     cwd=str(self.terminal_path.parent),
                     env=self._build_environment(),
@@ -95,118 +146,108 @@ class MT5Runtime:
                     start_new_session=True,
                 )
             except OSError as exc:
-                self._process = None
+                self._launcher_process = None
+
                 raise MT5RuntimeError(
-                    f"Failed to launch MT5: {exc}"
+                    f"Failed to launch MT5 through Wine: {exc}"
                 ) from exc
 
             deadline = time.monotonic() + self.startup_timeout
 
             while time.monotonic() < deadline:
-                if self._process.poll() is not None:
-                    return_code = self._process.returncode
-                    self._process = None
+                terminal_pid = self._find_terminal_pid()
 
-                    raise MT5RuntimeError(
-                        f"MT5 exited during startup with code "
-                        f"{return_code}"
-                    )
-
+                if terminal_pid > 0:
+                    return terminal_pid
                 time.sleep(0.25)
 
-            return self._process.pid
+            launcher_code = (
+                self._launcher_process.poll()
+                if self._launcher_process is not None
+                else None
+            )
+
+            self._launcher_process = None
+
+            raise MT5RuntimeError(
+                "MT5 terminal64.exe was not detected within "
+                f"{self.startup_timeout:.1f} seconds. "
+                f"Wine launcher exit code: {launcher_code}"
+            )
 
     def stop(self, timeout: float = 10.0) -> bool:
         """
-        Stop the MT5 process started by this runtime.
+        Stop the actual MT5 terminal process.
 
         Returns:
-            True if stopped successfully.
+            True if MT5 stopped successfully.
         """
+
         with self._lock:
-            if self._process is None:
-                return True
+            terminal_pid = self._find_terminal_pid()
 
-            process = self._process
-
-            if process.poll() is not None:
-                self._process = None
+            if terminal_pid <= 0:
+                self._launcher_process = None
                 return True
 
             try:
-                # Because start_new_session=True was used,
-                # terminate the complete process group.
-                os.killpg(
-                    os.getpgid(process.pid),
+                os.kill(
+                    terminal_pid,
                     signal.SIGTERM,
                 )
             except ProcessLookupError:
-                self._process = None
+                self._launcher_process = None
                 return True
 
-            try:
-                process.wait(timeout=timeout)
-                self._process = None
-                return True
-            except subprocess.TimeoutExpired:
-                pass
+            deadline = time.monotonic() + timeout
 
-            # Force termination if graceful shutdown timed out.
+            while time.monotonic() < deadline:
+                if self._find_terminal_pid() <= 0:
+                    self._launcher_process = None
+                    return True
+
+                time.sleep(0.25)
+
             try:
-                os.killpg(
-                    os.getpgid(process.pid),
+                os.kill(
+                    terminal_pid,
                     signal.SIGKILL,
                 )
             except ProcessLookupError:
                 pass
 
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                return False
+            deadline = time.monotonic() + 3.0
 
-            self._process = None
-            return True
+            while time.monotonic() < deadline:
+                if self._find_terminal_pid() <= 0:
+                    self._launcher_process = None
+                    return True
 
-    # ---------------------------------------------------------
-    # STATUS
-    # ---------------------------------------------------------
+                time.sleep(0.25)
 
-    def is_running(self) -> bool:
-        """Return True when the managed MT5 process is alive."""
-        if self._process is None:
             return False
 
-        if self._process.poll() is None:
-            return True
 
-        self._process = None
-        return False
+    def is_running(self) -> bool:
+        """Return True when terminal64.exe is running."""
+        return self._find_terminal_pid() > 0
 
     def pid(self) -> int:
-        """Return the current MT5 launcher PID."""
-        if self._process is None:
-            return 0
-
-        if self._process.poll() is not None:
-            self._process = None
-            return 0
-
-        return self._process.pid
+        """Return the actual terminal64.exe PID."""
+        return self._find_terminal_pid()
 
     def restart(self) -> int:
-        """Stop MT5 if running, then start it again."""
+        """Stop MT5 and start it again."""
         self.stop()
         return self.start()
 
     def heartbeat(self) -> dict[str, object]:
-        """
-        Return a lightweight runtime health snapshot.
-        """
-        running = self.is_running()
+        """Return a lightweight MT5 runtime health snapshot."""
+
+        terminal_pid = self._find_terminal_pid()
 
         return {
-            "running": running,
-            "pid": self.pid() if running else 0,
+            "running": terminal_pid > 0,
+            "pid": terminal_pid,
             "terminal": str(self.terminal_path),
         }
