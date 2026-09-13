@@ -1,146 +1,43 @@
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from typing import Optional
-
-
-@dataclass
-class EAInstance:
-    ea_id: str
-    name: str
-    version: str
-    symbol: str
-    magic_number: int
-
-    status: str = "STOPPED"
-    enabled: bool = False
-    heartbeat: Optional[str] = None
-
-
-class EARegistry:
-    """
-    Registry for the EAs managed by the platform.
-
-    At the moment the platform manages one EA:
-        AI_BASKET_EA
-    """
-
-    def __init__(self) -> None:
-        self._instances: dict[str, EAInstance] = {}
-
-    def register(
-        self,
-        ea_id: str,
-        name: str,
-        version: str,
-        symbol: str,
-        magic_number: int,
-    ) -> EAInstance:
-        """Register a new EA instance."""
-
-        if not ea_id.strip():
-            raise ValueError("EA ID cannot be empty.")
-
-        if ea_id in self._instances:
-            raise ValueError(f"EA already registered: {ea_id}")
-
-        if magic_number <= 0:
-            raise ValueError("Magic number must be greater than zero.")
-
-        instance = EAInstance(
-            ea_id=ea_id,
-            name=name,
-            version=version,
-            symbol=symbol,
-            magic_number=magic_number,
-        )
-
-        self._instances[ea_id] = instance
-        return instance
-
-    def get(self, ea_id: str) -> EAInstance:
-        """Return a registered EA."""
-
-        instance = self._instances.get(ea_id)
-
-        if instance is None:
-            raise KeyError(f"EA not registered: {ea_id}")
-
-        return instance
-
-    def list_all(self) -> list[EAInstance]:
-        """Return all registered EAs."""
-
-        return list(self._instances.values())
-
-    def set_status(self, ea_id: str, status: str) -> EAInstance:
-        """Update the operational status of an EA."""
-
-        instance = self.get(ea_id)
-        instance.status = status
-        return instance
-
-    def set_enabled(self, ea_id: str, enabled: bool) -> EAInstance:
-        """Enable or disable trading for an EA."""
-
-        instance = self.get(ea_id)
-        instance.enabled = enabled
-        return instance
-
-    def heartbeat(self, ea_id: str) -> EAInstance:
-        """Record the latest heartbeat time."""
-
-        instance = self.get(ea_id)
-        instance.heartbeat = datetime.now(timezone.utc).isoformat()
-        return instance
-
-    def snapshot(self) -> list[dict]:
-        """Return registry data in API-friendly form."""
-
-        return [asdict(instance) for instance in self._instances.values()]
-
-
-def create_registry() -> EARegistry:
-    """
-    Create the platform registry and register
-    the currently deployed EA.
-    """
-
-    registry = EARegistry()
-
-    registry.register(
-        ea_id="AI_BASKET_EA",
-        name="AI Basket EA",
-        version="1.31",
-        symbol="XAUUSD.m",
-        magic_number=26091001,
-    )
-
-    return registry
+from lifecycle import EALifecycleController
+from mt5_runtime import MT5Runtime
+from registry import create_registry
 
 
 def main() -> None:
     registry = create_registry()
+    lifecycle = EALifecycleController(registry)
 
-    # Initial state: EA exists but is not running.
-    registry.set_status("AI_BASKET_EA", "STOPPED")
-    registry.set_enabled("AI_BASKET_EA", False)
+    ea_id = "AI_BASKET_EA"
 
-    # Record a heartbeat to verify the registry is working.
-    registry.heartbeat("AI_BASKET_EA")
+    print("\nInitial state:")
+    print(registry.snapshot())
 
-    print("\nEA Manager Registry")
-    print("=" * 60)
+    print("\nStarting EA...")
+    lifecycle.start(ea_id)
+    print(registry.snapshot())
 
-    for ea in registry.snapshot():
-        print(f"EA ID       : {ea['ea_id']}")
-        print(f"Name        : {ea['name']}")
-        print(f"Version     : {ea['version']}")
-        print(f"Symbol      : {ea['symbol']}")
-        print(f"Magic       : {ea['magic_number']}")
-        print(f"Status      : {ea['status']}")
-        print(f"Enabled     : {ea['enabled']}")
-        print(f"Heartbeat   : {ea['heartbeat']}")
-        print("-" * 60)
+    print("\nPausing EA...")
+    lifecycle.pause(ea_id)
+    print(registry.snapshot())
+
+    print("\nResuming EA...")
+    lifecycle.resume(ea_id)
+    print(registry.snapshot())
+
+    print("\nStopping EA...")
+    lifecycle.stop(ea_id)
+    print(registry.snapshot())
+
+    runtime = MT5Runtime(
+        terminal_path=(
+            "/home/mamba/.wine/drive_c/"
+            "Program Files/MetaTrader 5/terminal64.exe"
+        ),
+        wine_prefix="/home/mamba/.wine",
+    )
+
+    print("\nMT5 runtime:")
+    print(runtime.heartbeat())
 
 
 if __name__ == "__main__":
