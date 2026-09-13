@@ -3,10 +3,10 @@ from __future__ import annotations
 from enum import Enum
 from threading import Lock
 
-from ipc.file_bridge import EAFileBridge
-from ipc.protocol import CommandResult, EACommand
-from mt5_runtime import MT5Runtime
-from registry import EARegistry
+from manager.ipc.file_bridge import EAFileBridge
+from manager.ipc.protocol import CommandResult, EACommand
+from manager.mt5_runtime import MT5Runtime
+from manager.registry import EARegistry
 
 
 class EAStatus(str, Enum):

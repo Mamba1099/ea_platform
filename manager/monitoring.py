@@ -6,8 +6,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
-from ipc.file_bridge import EAFileBridge
-from registry import EARegistry
+from manager.ipc.file_bridge import EAFileBridge
+from manager.registry import EARegistry
 
 
 @dataclass

@@ -1,9 +1,9 @@
-from lifecycle import EALifecycleController
-from mt5_runtime import MT5Runtime
-from registry import create_registry
-from ipc.config import IPC_ROOT
-from ipc.file_bridge import EAFileBridge
-from monitoring import EAMonitor
+from manager.lifecycle import EALifecycleController
+from manager.mt5_runtime import MT5Runtime
+from manager.registry import create_registry
+from manager.ipc.config import IPC_ROOT
+from manager.ipc.file_bridge import EAFileBridge
+from manager.monitoring import EAMonitor
 
 
 def main() -> None:
