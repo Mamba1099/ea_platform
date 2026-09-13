@@ -4,13 +4,13 @@ from registry import create_registry
 from ipc.config import IPC_ROOT
 from ipc.file_bridge import EAFileBridge
 
+
 def main() -> None:
     registry = create_registry()
 
     runtime = MT5Runtime(
         terminal_path=(
-            "/home/mamba/.wine/drive_c/"
-            "Program Files/MetaTrader 5/terminal64.exe"
+            "/home/mamba/.wine/drive_c/" "Program Files/MetaTrader 5/terminal64.exe"
         ),
         wine_prefix="/home/mamba/.wine",
     )

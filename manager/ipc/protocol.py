@@ -141,11 +141,35 @@ class EAStatusMessage:
                 direction=str(basket_data.get("direction", "NONE")),
                 positions=int(basket_data.get("positions", 0)),
                 floating_pnl=float(basket_data.get("floating_pnl", 0.0)),
+                average_entry=float(basket_data.get("average_entry", 0.0)),
+                last_entry=float(basket_data.get("last_entry", 0.0)),
                 thesis_score=float(basket_data.get("thesis_score", 0.0)),
                 recovery_score=float(basket_data.get("recovery_score", 0.0)),
                 opportunity_score=float(basket_data.get("opportunity_score", 0.0)),
+                atr=float(basket_data.get("atr", 0.0)),
+                atr_ratio=float(basket_data.get("atr_ratio", 0.0)),
+                spread=float(basket_data.get("spread", 0.0)),
+                current_price=float(basket_data.get("current_price", 0.0)),
+                daily_profit=float(basket_data.get("daily_profit", 0.0)),
+                daily_profit_locked=bool(
+                    basket_data.get(
+                        "daily_profit_locked",
+                        False,
+                    )
+                ),
+                last_decision=str(
+                    basket_data.get(
+                        "last_decision",
+                        "WAIT",
+                    )
+                ),
+                last_reason=str(
+                    basket_data.get(
+                        "last_reason",
+                        "",
+                    )
+                ),
             )
-
         result = data.get("last_command_result")
 
         return cls(
@@ -165,3 +189,29 @@ class EAStatusMessage:
             ),
             last_command_message=data.get("last_command_message"),
         )
+
+
+@dataclass(frozen=True)
+class EABasketStatus:
+    state: str = "FLAT"
+    direction: str = "NONE"
+    positions: int = 0
+
+    floating_pnl: float = 0.0
+    average_entry: float = 0.0
+    last_entry: float = 0.0
+
+    thesis_score: float = 0.0
+    recovery_score: float = 0.0
+    opportunity_score: float = 0.0
+
+    atr: float = 0.0
+    atr_ratio: float = 0.0
+    spread: float = 0.0
+    current_price: float = 0.0
+
+    daily_profit: float = 0.0
+    daily_profit_locked: bool = False
+
+    last_decision: str = "WAIT"
+    last_reason: str = ""
