@@ -1,231 +1,143 @@
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from threading import Lock
 from typing import Optional
 
-from manager.ipc.file_bridge import EAFileBridge
 from manager.registry import EARegistry
+from manager.ipc.file_bridge import EAFileBridge
+from manager.mt5_runtime import MT5Runtime
 
 
 @dataclass
 class EAHealth:
-    """
-    Runtime health information for one EA.
-
-    file_age_seconds is based on the Linux filesystem modification
-    time of status.json, not the timestamp written by the EA.
-
-    This is important because MT5 TimeCurrent() can remain unchanged
-    while the market/server is closed.
-    """
-
     ea_id: str
     status: str
     enabled: bool
-
     status_available: bool
     file_age_seconds: Optional[float]
-
     healthy: bool
     stale: bool
     terminal_connected: bool
-
-    message: str = ""
+    message: str
 
 
 class EAMonitor:
-    """
-    Synchronizes EA telemetry from the IPC bridge into the registry
-    and evaluates EA health.
-
-    Responsibilities:
-        - Read status.json.
-        - Update registry status/enabled state.
-        - Measure status-file freshness.
-        - Detect stale/offline EA telemetry.
-        - Provide a health snapshot.
-
-    This class does NOT:
-        - start or stop MT5,
-        - send trading commands,
-        - modify EA strategy state.
-    """
-
     def __init__(
         self,
         registry: EARegistry,
         bridge: EAFileBridge,
-        stale_after_seconds: float = 10.0,
-    ) -> None:
-        if stale_after_seconds <= 0:
-            raise ValueError("stale_after_seconds must be greater than zero.")
-
+        runtime: MT5Runtime,
+        stale_threshold: float = 10.0,
+    ):
         self.registry = registry
         self.bridge = bridge
-        self.stale_after_seconds = stale_after_seconds
+        self.runtime = runtime
+        self.stale_threshold = stale_threshold
 
-        self._health: dict[str, EAHealth] = {}
-        self._lock = Lock()
+    def refresh(self, ea_id: str) -> EAHealth:
+        instance = self.registry.get(ea_id)
 
-    # =========================================================
-    # INTERNAL
-    # =========================================================
+        if instance is None:
+            raise ValueError(f"Unknown EA: {ea_id}")
 
-    def _status_file(
-        self,
-        ea_id: str,
-    ) -> Path:
-        """
-        Resolve the local status.json path used by the file bridge.
-        """
+        status_message = self.bridge.read_status(ea_id)
 
-        return self.bridge.shared_dir / ea_id / "status.json"
+        if status_message is None:
+            self.registry.set_status(ea_id, "ERROR")
+            return EAHealth(
+                ea_id=ea_id,
+                status="ERROR",
+                enabled=False,
+                status_available=False,
+                file_age_seconds=None,
+                healthy=False,
+                stale=True,
+                terminal_connected=self.runtime.is_running(),
+                message="EA status telemetry is unavailable.",
+            )
 
-    def _file_age_seconds(
-        self,
-        path: Path,
-    ) -> Optional[float]:
-        if not path.exists():
-            return None
+        status_path = self.bridge._status_file(ea_id)
+
+        file_age_seconds: Optional[float] = None
 
         try:
-            modified = path.stat().st_mtime
+            modified = status_path.stat().st_mtime
+            file_age_seconds = max(0.0, time.time() - modified)
         except OSError:
-            return None
+            file_age_seconds = None
 
-        return max(
-            0.0,
-            time.time() - modified,
+        stale = file_age_seconds is None or file_age_seconds > self.stale_threshold
+
+        terminal_connected = bool(status_message.terminal_connected)
+        healthy = not stale and terminal_connected
+
+        status = status_message.status
+        enabled = status_message.enabled
+
+        # The EA itself is authoritative when fresh.
+        if healthy:
+            self.registry.set_status(ea_id, status)
+            self.registry.set_enabled(ea_id, enabled)
+
+            self.registry.heartbeat(ea_id)
+
+            message = "EA telemetry healthy."
+
+        else:
+            self.registry.set_status(ea_id, "ERROR")
+            self.registry.set_enabled(ea_id, False)
+
+            message = (
+                "EA telemetry is stale."
+                if stale
+                else "EA terminal connection is unavailable."
+            )
+
+        return EAHealth(
+            ea_id=ea_id,
+            status=status if healthy else "ERROR",
+            enabled=enabled if healthy else False,
+            status_available=True,
+            file_age_seconds=file_age_seconds,
+            healthy=healthy,
+            stale=stale,
+            terminal_connected=terminal_connected,
+            message=message,
         )
 
-    # =========================================================
-    # REFRESH
-    # =========================================================
+    def refresh_all(self) -> list[EAHealth]:
+        results: list[EAHealth] = []
 
-    def refresh(
-        self,
-        ea_id: str,
-    ) -> EAHealth:
-        """
-        Read the EA's latest status and synchronize the registry.
+        for instance in self.registry.list_all():
+            try:
+                results.append(self.refresh(instance.ea_id))
+            except Exception as exc:
+                self.registry.set_status(instance.ea_id, "ERROR")
+                self.registry.set_enabled(instance.ea_id, False)
 
-        Returns:
-            EAHealth describing the current EA health.
-        """
-
-        with self._lock:
-            status = self.bridge.read_status(ea_id)
-
-            status_file = self._status_file(ea_id)
-            age = self._file_age_seconds(status_file)
-
-            if status is None:
-                health = EAHealth(
-                    ea_id=ea_id,
-                    status="OFFLINE",
-                    enabled=False,
-                    status_available=False,
-                    file_age_seconds=age,
-                    healthy=False,
-                    stale=True,
-                    terminal_connected=False,
-                    message="No valid EA status available.",
+                results.append(
+                    EAHealth(
+                        ea_id=instance.ea_id,
+                        status="ERROR",
+                        enabled=False,
+                        status_available=False,
+                        file_age_seconds=None,
+                        healthy=False,
+                        stale=True,
+                        terminal_connected=self.runtime.is_running(),
+                        message=f"Monitoring error: {exc}",
+                    )
                 )
-
-                self._health[ea_id] = health
-
-                return health
-
-            # Synchronize registry with actual EA state.
-            self.registry.set_status(
-                ea_id,
-                status.status.value,
-            )
-
-            self.registry.set_enabled(
-                ea_id,
-                status.enabled,
-            )
-
-            # File modification time is our real heartbeat signal.
-            stale = age is None or age > self.stale_after_seconds
-
-            healthy = not stale and status.terminal_connected
-
-            if stale:
-                message = (
-                    f"Status file is stale " f"(age={age:.1f}s)."
-                    if age is not None
-                    else "Status file timestamp unavailable."
-                )
-            elif not status.terminal_connected:
-                message = "EA reports terminal disconnected."
-            else:
-                message = "EA telemetry healthy."
-
-            health = EAHealth(
-                ea_id=ea_id,
-                status=status.status.value,
-                enabled=status.enabled,
-                status_available=True,
-                file_age_seconds=age,
-                healthy=healthy,
-                stale=stale,
-                terminal_connected=status.terminal_connected,
-                message=message,
-            )
-
-            self._health[ea_id] = health
-
-            return health
-
-    # =========================================================
-    # REFRESH ALL
-    # =========================================================
-
-    def refresh_all(self) -> dict[str, EAHealth]:
-        """
-        Refresh every registered EA.
-        """
-
-        results: dict[str, EAHealth] = {}
-
-        for ea in self.registry.list_all():
-            results[ea.ea_id] = self.refresh(ea.ea_id)
 
         return results
 
-    # =========================================================
-    # HEALTH
-    # =========================================================
+    def health(self, ea_id: str) -> EAHealth:
+        return self.refresh(ea_id)
 
-    def health(
-        self,
-        ea_id: str,
-    ) -> Optional[EAHealth]:
-        """
-        Return the most recently calculated health state.
-        """
-
-        with self._lock:
-            return self._health.get(ea_id)
-
-    def health_dict(
-        self,
-        ea_id: str,
-    ) -> Optional[dict]:
-        """
-        Return health as an API-friendly dictionary.
-        """
-
+    def health_dict(self, ea_id: str) -> dict:
         health = self.health(ea_id)
-
-        if health is None:
-            return None
-
         return {
             "ea_id": health.ea_id,
             "status": health.status,
@@ -238,23 +150,96 @@ class EAMonitor:
             "message": health.message,
         }
 
-    def health_all(self) -> dict[str, dict]:
-        """
-        Return health information for all registered EAs.
-        """
-
-        with self._lock:
-            return {
-                ea_id: {
-                    "ea_id": health.ea_id,
-                    "status": health.status,
-                    "enabled": health.enabled,
-                    "status_available": health.status_available,
-                    "file_age_seconds": health.file_age_seconds,
-                    "healthy": health.healthy,
-                    "stale": health.stale,
-                    "terminal_connected": health.terminal_connected,
-                    "message": health.message,
-                }
-                for ea_id, health in self._health.items()
+    def health_all(self) -> list[dict]:
+        return [
+            {
+                "ea_id": item.ea_id,
+                "status": item.status,
+                "enabled": item.enabled,
+                "status_available": item.status_available,
+                "file_age_seconds": item.file_age_seconds,
+                "healthy": item.healthy,
+                "stale": item.stale,
+                "terminal_connected": item.terminal_connected,
+                "message": item.message,
             }
+            for item in self.refresh_all()
+        ]
+
+
+class EAMonitorWatchdog:
+    """
+    Background monitor for all registered EAs.
+
+    The watchdog deliberately only observes and synchronizes state.
+    It does not automatically restart or trade on behalf of an EA.
+    """
+
+    def __init__(
+        self,
+        monitor: EAMonitor,
+        interval_seconds: float = 2.0,
+    ):
+        self.monitor = monitor
+        self.interval_seconds = interval_seconds
+
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._started = False
+
+    def start(self) -> None:
+        if self._started:
+            return
+
+        self._stop_event.clear()
+
+        self._thread = threading.Thread(
+            target=self._run,
+            name="ea-monitor-watchdog",
+            daemon=True,
+        )
+
+        self._thread.start()
+        self._started = True
+
+        print(f"[watchdog] started " f"(interval={self.interval_seconds:.1f}s)")
+
+    def stop(self) -> None:
+        if not self._started:
+            return
+
+        self._stop_event.set()
+
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+
+        self._thread = None
+        self._started = False
+
+        print("[watchdog] stopped")
+
+    def is_running(self) -> bool:
+        return self._started and self._thread is not None and self._thread.is_alive()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                results = self.monitor.refresh_all()
+
+                for result in results:
+                    if result.healthy:
+                        print(
+                            f"[watchdog] {result.ea_id}: "
+                            f"{result.status.value if hasattr(result.status, 'value') else result.status} "
+                            f"age={result.file_age_seconds:.2f}s"
+                        )
+                    else:
+                        print(
+                            f"[watchdog] {result.ea_id}: "
+                            f"UNHEALTHY - {result.message}"
+                        )
+
+            except Exception as exc:
+                print(f"[watchdog] cycle failed: {exc}")
+
+            self._stop_event.wait(self.interval_seconds)

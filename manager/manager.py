@@ -23,11 +23,7 @@ def main() -> None:
         runtime,
         bridge,
     )
-    monitor = EAMonitor(
-        registry,
-        bridge,
-        stale_after_seconds=10.0
-    )
+    monitor = EAMonitor(registry, bridge, interval_seconds=10.0)
 
     ea_id = "AI_BASKET_EA"
 
@@ -40,9 +36,7 @@ def main() -> None:
     print("\nRegistry after refresh:")
     print(registry.snapshot())
 
-    health = monitor.refresh(
-    "AI_BASKET_EA"
-    )
+    health = monitor.refresh("AI_BASKET_EA")
 
     print("\nEA health:")
     print(monitor.health_dict("AI_BASKET_EA"))

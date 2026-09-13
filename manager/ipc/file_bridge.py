@@ -83,9 +83,9 @@ class EAFileBridge:
 
         return self._ea_dir(ea_id) / "status.json"
 
-    @staticmethod
-    def _timestamp() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        @staticmethod
+        def _timestamp() -> str:
+            return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
     def _write_json_atomic(

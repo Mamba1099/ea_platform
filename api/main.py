@@ -1,19 +1,30 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
 
 from manager.ipc.config import IPC_ROOT
 from manager.ipc.file_bridge import EAFileBridge
 from manager.lifecycle import EALifecycleController
-from manager.monitoring import EAMonitor
+from manager.monitoring import EAMonitor, EAMonitorWatchdog
 from manager.mt5_runtime import MT5Runtime
 from manager.registry import create_registry
 
 
-app = FastAPI(
-    title="EA Management Platform",
-    version="0.1.0",
-)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("[platform] starting EA monitor watchdog")
+
+    watchdog.start()
+
+    try:
+        yield
+    finally:
+        print("[platform] stopping EA monitor watchdog")
+        watchdog.stop()
+
+
+app = FastAPI(title="EA Management Platform", lifespan=lifespan)
 
 
 # ============================================================
@@ -24,8 +35,7 @@ registry = create_registry()
 
 runtime = MT5Runtime(
     terminal_path=(
-        "/home/mamba/.wine/drive_c/"
-        "Program Files/MetaTrader 5/terminal64.exe"
+        "/home/mamba/.wine/drive_c/" "Program Files/MetaTrader 5/terminal64.exe"
     ),
     wine_prefix="/home/mamba/.wine",
 )
@@ -41,13 +51,19 @@ lifecycle = EALifecycleController(
 monitor = EAMonitor(
     registry,
     bridge,
-    stale_after_seconds=10.0,
+    runtime,
+    stale_threshold=10.0,
+)
+watchdog = EAMonitorWatchdog(
+    monitor,
+    interval_seconds=2.0,
 )
 
 
 # ============================================================
 # HELPERS
 # ============================================================
+
 
 def get_ea_or_404(ea_id: str):
     try:
@@ -79,11 +95,7 @@ def status_payload(ea_id: str) -> dict:
             "enabled": registry_ea.enabled,
             "heartbeat": registry_ea.heartbeat,
         },
-        "ea": (
-            status.to_dict()
-            if status is not None
-            else None
-        ),
+        "ea": (status.to_dict() if status is not None else None),
         "health": health,
         "mt5": runtime.heartbeat(),
     }
@@ -92,6 +104,7 @@ def status_payload(ea_id: str) -> dict:
 # ============================================================
 # ROOT / HEALTH
 # ============================================================
+
 
 @app.get("/")
 def root():
@@ -115,14 +128,10 @@ def platform_health():
 # EA DISCOVERY
 # ============================================================
 
+
 @app.get("/api/eas")
 def list_eas():
-    return {
-        "eas": [
-            status_payload(ea.ea_id)
-            for ea in registry.list_all()
-        ]
-    }
+    return {"eas": [status_payload(ea.ea_id) for ea in registry.list_all()]}
 
 
 @app.get("/api/eas/{ea_id}")
@@ -155,6 +164,7 @@ def get_ea_health(ea_id: str):
 # ============================================================
 # LIFECYCLE CONTROLS
 # ============================================================
+
 
 @app.post("/api/eas/{ea_id}/start")
 def start_ea(ea_id: str):
@@ -270,3 +280,12 @@ def stop_ea(ea_id: str):
             status_code=500,
             detail=str(exc),
         ) from exc
+
+
+@app.get("/api/monitor")
+def monitor_status():
+    return {
+        "watchdog_running": watchdog.is_running(),
+        "interval_seconds": watchdog.interval_seconds,
+        "eas": monitor.health_all(),
+    }
