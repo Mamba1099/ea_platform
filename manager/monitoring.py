@@ -179,10 +179,12 @@ class EAMonitorWatchdog:
         self,
         monitor: EAMonitor,
         event_store,
+        instance_store,
         interval_seconds: float = 2.0,
     ):
         self.monitor = monitor
         self.event_store = event_store
+        self.instance_store = instance_store
         self.interval_seconds = interval_seconds
 
         self._thread: Optional[threading.Thread] = None
@@ -248,6 +250,9 @@ class EAMonitorWatchdog:
 
                     self._previous_states[result.ea_id] = current
 
+                    if previous is None:
+                        self._persist_state(result)
+
                     if result.healthy:
                         print(
                             f"[watchdog] {result.ea_id}: "
@@ -284,6 +289,17 @@ class EAMonitorWatchdog:
             "EA_STATUS_CHANGED",
         )
 
+    def _persist_state(self, result: EAHealth) -> None:
+        self.instance_store.persist_status(
+            ea_id=result.ea_id,
+            status=(
+                result.status.value
+                if hasattr(result.status, "value")
+                else result.status
+            ),
+            enabled=result.enabled,
+        )
+
     def _detect_transition(
         self,
         previous: tuple[str, bool, bool],
@@ -293,49 +309,68 @@ class EAMonitorWatchdog:
         previous_status, previous_healthy, previous_stale = previous
         current_status, current_healthy, current_stale = current
 
+        previous_status_text = (
+            previous_status.value
+            if hasattr(previous_status, "value")
+            else previous_status
+        )
+
+        current_status_text = (
+            current_status.value if hasattr(current_status, "value") else current_status
+        )
+
         if previous_stale is False and current_stale is True:
             self.event_store.record(
                 result.ea_id,
                 "EA_STALE",
-                previous_status,
-                current_status,
+                previous_status_text,
+                current_status_text,
                 result.message,
             )
+
+            self._persist_state(result)
             return
 
         if previous_healthy is False and current_healthy is True:
             self.event_store.record(
                 result.ea_id,
                 "EA_RECOVERED",
-                previous_status,
-                current_status,
+                previous_status_text,
+                current_status_text,
                 "EA telemetry recovered.",
             )
+
+            self._persist_state(result)
             return
 
         if previous_healthy is True and current_healthy is False:
             self.event_store.record(
                 result.ea_id,
                 "EA_UNHEALTHY",
-                previous_status,
-                current_status,
+                previous_status_text,
+                current_status_text,
                 result.message,
             )
+
+            self._persist_state(result)
             return
 
         if previous_status != current_status:
             event_type = self._status_event_type(
-                previous_status,
-                current_status,
+                previous_status_text,
+                current_status_text,
             )
 
             self.event_store.record(
                 result.ea_id,
                 event_type,
-                previous_status,
-                current_status,
-                f"EA status changed from "
-                f"{previous_status.value if hasattr(previous_status, 'value') else previous_status} "
-                f"to "
-                f"{current_status.value if hasattr(current_status, 'value') else current_status}.",
+                previous_status_text,
+                current_status_text,
+                (
+                    f"EA status changed from "
+                    f"{previous_status_text} to "
+                    f"{current_status_text}."
+                ),
             )
+
+            self._persist_state(result)

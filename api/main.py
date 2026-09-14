@@ -10,11 +10,16 @@ from manager.monitoring import EAMonitor, EAMonitorWatchdog
 from manager.mt5_runtime import MT5Runtime
 from manager.db.event_store import EventStore
 from manager.db.database import SessionLocal
+from manager.db.instance_store import EAInstanceStore
 from manager.registry import create_registry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("[platform] synchronizing EA registry with database")
+
+    instance_store.bootstrap_from_registry(registry)
+
     print("[platform] starting EA monitor watchdog")
 
     watchdog.start()
@@ -44,7 +49,7 @@ runtime = MT5Runtime(
 
 bridge = EAFileBridge(IPC_ROOT)
 event_store = EventStore(SessionLocal)
-
+instance_store = EAInstanceStore(SessionLocal)
 lifecycle = EALifecycleController(
     registry,
     runtime,
@@ -60,6 +65,7 @@ monitor = EAMonitor(
 watchdog = EAMonitorWatchdog(
     monitor,
     event_store,
+    instance_store,
     interval_seconds=2.0,
 )
 
@@ -318,5 +324,33 @@ def get_ea_events(ea_id: str, limit: int = 100):
                 "created_at": event.created_at.isoformat(),
             }
             for event in events
+        ],
+    }
+
+@app.get("/api/db/eas")
+def get_persisted_eas():
+    instances = instance_store.list_all()
+
+    return {
+        "count": len(instances),
+        "eas": [
+            {
+                "id": instance.id,
+                "ea_id": instance.ea_id,
+                "name": instance.name,
+                "version": instance.version,
+                "symbol": instance.symbol,
+                "magic_number": instance.magic_number,
+                "status": instance.status,
+                "enabled": instance.enabled,
+                "last_seen": (
+                    instance.last_seen.isoformat()
+                    if instance.last_seen
+                    else None
+                ),
+                "created_at": instance.created_at.isoformat(),
+                "updated_at": instance.updated_at.isoformat(),
+            }
+            for instance in instances
         ],
     }
