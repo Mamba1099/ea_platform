@@ -178,14 +178,18 @@ class EAMonitorWatchdog:
     def __init__(
         self,
         monitor: EAMonitor,
+        event_store,
         interval_seconds: float = 2.0,
     ):
         self.monitor = monitor
+        self.event_store = event_store
         self.interval_seconds = interval_seconds
 
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._started = False
+
+        self._previous_states: dict[str, tuple[str, bool, bool]] = {}
 
     def start(self) -> None:
         if self._started:
@@ -227,6 +231,23 @@ class EAMonitorWatchdog:
                 results = self.monitor.refresh_all()
 
                 for result in results:
+                    previous = self._previous_states.get(result.ea_id)
+
+                    current = (
+                        result.status,
+                        result.healthy,
+                        result.stale,
+                    )
+
+                    if previous is not None:
+                        self._detect_transition(
+                            previous,
+                            current,
+                            result,
+                        )
+
+                    self._previous_states[result.ea_id] = current
+
                     if result.healthy:
                         print(
                             f"[watchdog] {result.ea_id}: "
@@ -243,3 +264,78 @@ class EAMonitorWatchdog:
                 print(f"[watchdog] cycle failed: {exc}")
 
             self._stop_event.wait(self.interval_seconds)
+
+    @staticmethod
+    def _status_event_type(
+        previous_status: str,
+        current_status: str,
+    ) -> str:
+        mapping = {
+            "PAUSED": "EA_PAUSED",
+            "RUNNING": "EA_RESUMED",
+            "STOPPED": "EA_STOPPED",
+            "ERROR": "EA_ERROR",
+            "STARTING": "EA_STARTING",
+            "STOPPING": "EA_STOPPING",
+        }
+
+        return mapping.get(
+            current_status,
+            "EA_STATUS_CHANGED",
+        )
+
+    def _detect_transition(
+        self,
+        previous: tuple[str, bool, bool],
+        current: tuple[str, bool, bool],
+        result: EAHealth,
+    ) -> None:
+        previous_status, previous_healthy, previous_stale = previous
+        current_status, current_healthy, current_stale = current
+
+        if previous_stale is False and current_stale is True:
+            self.event_store.record(
+                result.ea_id,
+                "EA_STALE",
+                previous_status,
+                current_status,
+                result.message,
+            )
+            return
+
+        if previous_healthy is False and current_healthy is True:
+            self.event_store.record(
+                result.ea_id,
+                "EA_RECOVERED",
+                previous_status,
+                current_status,
+                "EA telemetry recovered.",
+            )
+            return
+
+        if previous_healthy is True and current_healthy is False:
+            self.event_store.record(
+                result.ea_id,
+                "EA_UNHEALTHY",
+                previous_status,
+                current_status,
+                result.message,
+            )
+            return
+
+        if previous_status != current_status:
+            event_type = self._status_event_type(
+                previous_status,
+                current_status,
+            )
+
+            self.event_store.record(
+                result.ea_id,
+                event_type,
+                previous_status,
+                current_status,
+                f"EA status changed from "
+                f"{previous_status.value if hasattr(previous_status, 'value') else previous_status} "
+                f"to "
+                f"{current_status.value if hasattr(current_status, 'value') else current_status}.",
+            )

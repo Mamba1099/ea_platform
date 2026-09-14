@@ -8,6 +8,8 @@ from manager.ipc.file_bridge import EAFileBridge
 from manager.lifecycle import EALifecycleController
 from manager.monitoring import EAMonitor, EAMonitorWatchdog
 from manager.mt5_runtime import MT5Runtime
+from manager.db.event_store import EventStore
+from manager.db.database import SessionLocal
 from manager.registry import create_registry
 
 
@@ -41,6 +43,7 @@ runtime = MT5Runtime(
 )
 
 bridge = EAFileBridge(IPC_ROOT)
+event_store = EventStore(SessionLocal)
 
 lifecycle = EALifecycleController(
     registry,
@@ -56,6 +59,7 @@ monitor = EAMonitor(
 )
 watchdog = EAMonitorWatchdog(
     monitor,
+    event_store,
     interval_seconds=2.0,
 )
 
@@ -288,4 +292,31 @@ def monitor_status():
         "watchdog_running": watchdog.is_running(),
         "interval_seconds": watchdog.interval_seconds,
         "eas": monitor.health_all(),
+    }
+
+
+@app.get("/api/eas/{ea_id}/events")
+def get_ea_events(ea_id: str, limit: int = 100):
+    get_ea_or_404(ea_id)
+
+    limit = max(1, min(limit, 500))
+
+    events = event_store.list_events(
+        ea_id,
+        limit=limit,
+    )
+
+    return {
+        "ea_id": ea_id,
+        "events": [
+            {
+                "id": event.id,
+                "event_type": event.event_type,
+                "previous_status": event.previous_status,
+                "current_status": event.current_status,
+                "message": event.message,
+                "created_at": event.created_at.isoformat(),
+            }
+            for event in events
+        ],
     }
