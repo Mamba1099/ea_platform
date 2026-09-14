@@ -78,8 +78,8 @@ runtime = MT5Runtime(
 bridge = EAFileBridge(IPC_ROOT)
 event_store = EventStore(SessionLocal)
 instance_store = EAInstanceStore(SessionLocal)
-deployment_store = EADeploymentStore(SessionLocal)
 artifact_store = EAArtifactStore(SessionLocal)
+deployment_store = EADeploymentStore(SessionLocal)
 installation_store = EAInstallationStore(SessionLocal)
 
 lifecycle = EALifecycleController(
@@ -100,7 +100,7 @@ deployment_service = EADeploymentService(
     lifecycle=lifecycle,
     bridge=bridge,
     artifact_store=artifact_store,
-    installation_store=instance_store,
+    installation_store=installation_store,
     deployment_store=deployment_store,
     instance_store=instance_store,
     event_store=event_store,
@@ -439,12 +439,11 @@ def deploy_ea(
             "file_hash": deployment.file_hash,
             "started_at": deployment.started_at.isoformat(),
             "completed_at": (
-                deployment.completed_at.isoformat()
-                if deployment.completed_at
-                else None
+                deployment.completed_at.isoformat() if deployment.completed_at else None
             ),
         },
     }
+
 
 @app.get("/api/eas/{ea_id}/deployments/preflight")
 def deployment_preflight(
