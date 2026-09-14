@@ -21,9 +21,7 @@ from manager.registry import create_registry
 
 
 class EADeploymentRequest(BaseModel):
-    version: str
-    source_path: str
-    target_path: str
+    artifact_id: int
 
 
 class EAArtifactRequest(BaseModel):
@@ -86,6 +84,7 @@ deployment_service = EADeploymentService(
     registry=registry,
     lifecycle=lifecycle,
     bridge=bridge,
+    artifact_store=artifact_store,
     deployment_store=deployment_store,
     instance_store=instance_store,
     event_store=event_store,
@@ -399,9 +398,7 @@ def deploy_ea(
     try:
         deployment = deployment_service.deploy(
             ea_id=ea_id,
-            version=request.version,
-            source_path=request.source_path,
-            target_path=request.target_path,
+            artifact_id=request.artifact_id,
         )
 
     except EADeploymentError as exc:
@@ -425,6 +422,51 @@ def deploy_ea(
                 deployment.completed_at.isoformat() if deployment.completed_at else None
             ),
         },
+    }
+
+
+@app.get("/api/eas/{ea_id}/deployments/preflight")
+def deployment_preflight(
+    ea_id: str,
+    artifact_id: int,
+):
+    get_ea_or_404(ea_id)
+
+    return deployment_service.preflight(
+        ea_id=ea_id,
+        artifact_id=artifact_id,
+    )
+
+@app.get("/api/eas/{ea_id}/artifacts/{artifact_id}")
+def get_ea_artifact(
+    ea_id: str,
+    artifact_id: int,
+):
+    get_ea_or_404(ea_id)
+
+    artifact = artifact_store.get(artifact_id)
+
+    if artifact is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Artifact not found.",
+        )
+
+    if artifact.ea_id != ea_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Artifact not found for this EA.",
+        )
+
+    return {
+        "id": artifact.id,
+        "ea_id": artifact.ea_id,
+        "version": artifact.version,
+        "filename": artifact.filename,
+        "path": artifact.path,
+        "sha256": artifact.sha256,
+        "file_size": artifact.file_size,
+        "created_at": artifact.created_at.isoformat(),
     }
 
 

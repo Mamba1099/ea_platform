@@ -5,6 +5,7 @@ import shutil
 import time
 from pathlib import Path
 
+from manager.db.artifact_store import EAArtifactStore
 from manager.db.deployment_store import EADeploymentStore
 from manager.db.event_store import EventStore
 from manager.db.instance_store import EAInstanceStore
@@ -23,6 +24,7 @@ class EADeploymentService:
         registry: EARegistry,
         lifecycle: EALifecycleController,
         bridge: EAFileBridge,
+        artifact_store: EAArtifactStore,
         deployment_store: EADeploymentStore,
         instance_store: EAInstanceStore,
         event_store: EventStore,
@@ -30,6 +32,7 @@ class EADeploymentService:
         self.registry = registry
         self.lifecycle = lifecycle
         self.bridge = bridge
+        self.artifact_store = artifact_store
         self.deployment_store = deployment_store
         self.instance_store = instance_store
         self.event_store = event_store
@@ -46,12 +49,6 @@ class EADeploymentService:
                 digest.update(chunk)
 
         return digest.hexdigest()
-
-    def _resolve_target(self, target: Path) -> Path:
-        if target.is_symlink():
-            return target.resolve()
-
-        return target
 
     def _wait_for_version(
         self,
@@ -75,51 +72,220 @@ class EADeploymentService:
             f"within {timeout:.0f} seconds."
         )
 
+    def preflight(
+        self,
+        ea_id: str,
+        artifact_id: int,
+    ) -> dict:
+        instance = self.registry.get(ea_id)
+
+        if instance is None:
+            return {
+                "allowed": False,
+                "reason": f"Unknown EA: {ea_id}",
+                "ea_status": None,
+                "positions": None,
+                "terminal_connected": False,
+                "artifact_available": False,
+                "artifact_hash_valid": False,
+            }
+
+        artifact = self.artifact_store.get(artifact_id)
+
+        if artifact is None:
+            return {
+                "allowed": False,
+                "reason": f"Artifact {artifact_id} does not exist.",
+                "ea_status": instance.status,
+                "positions": None,
+                "terminal_connected": False,
+                "artifact_available": False,
+                "artifact_hash_valid": False,
+            }
+
+        if artifact.ea_id != ea_id:
+            return {
+                "allowed": False,
+                "reason": (
+                    f"Artifact {artifact_id} belongs to "
+                    f"{artifact.ea_id}, not {ea_id}."
+                ),
+                "ea_status": instance.status,
+                "positions": None,
+                "terminal_connected": False,
+                "artifact_available": False,
+                "artifact_hash_valid": False,
+            }
+
+        artifact_path = Path(artifact.path).expanduser().resolve()
+
+        artifact_available = (
+            artifact_path.is_file() and artifact_path.suffix.lower() == ".ex5"
+        )
+
+        if not artifact_available:
+            return {
+                "allowed": False,
+                "reason": (f"Artifact file is unavailable: " f"{artifact_path}"),
+                "ea_status": instance.status,
+                "positions": None,
+                "terminal_connected": False,
+                "artifact_available": False,
+                "artifact_hash_valid": False,
+                "artifact": {
+                    "id": artifact.id,
+                    "version": artifact.version,
+                },
+            }
+
+        current_hash = self.calculate_sha256(artifact_path)
+
+        artifact_hash_valid = current_hash == artifact.sha256
+
+        if not artifact_hash_valid:
+            return {
+                "allowed": False,
+                "reason": (
+                    "Artifact hash mismatch. " "The file changed after registration."
+                ),
+                "ea_status": instance.status,
+                "positions": None,
+                "terminal_connected": False,
+                "artifact_available": True,
+                "artifact_hash_valid": False,
+                "artifact": {
+                    "id": artifact.id,
+                    "version": artifact.version,
+                },
+            }
+
+        live_status = self.bridge.read_status(ea_id)
+
+        if live_status is None:
+            return {
+                "allowed": False,
+                "reason": "EA telemetry is unavailable.",
+                "ea_status": instance.status,
+                "positions": None,
+                "terminal_connected": False,
+                "artifact_available": True,
+                "artifact_hash_valid": True,
+                "artifact": {
+                    "id": artifact.id,
+                    "version": artifact.version,
+                },
+            }
+
+        positions = live_status.basket.positions
+        terminal_connected = bool(live_status.terminal_connected)
+
+        if not terminal_connected:
+            return {
+                "allowed": False,
+                "reason": "MT5 terminal is not connected.",
+                "ea_status": live_status.status,
+                "positions": positions,
+                "terminal_connected": False,
+                "artifact_available": True,
+                "artifact_hash_valid": True,
+                "artifact": {
+                    "id": artifact.id,
+                    "version": artifact.version,
+                },
+            }
+
+        if positions > 0:
+            return {
+                "allowed": False,
+                "reason": (
+                    f"EA has {positions} open "
+                    f"position(s). Close the basket before deployment."
+                ),
+                "ea_status": live_status.status,
+                "positions": positions,
+                "terminal_connected": True,
+                "artifact_available": True,
+                "artifact_hash_valid": True,
+                "artifact": {
+                    "id": artifact.id,
+                    "version": artifact.version,
+                },
+            }
+
+        return {
+            "allowed": True,
+            "reason": "EA is ready for deployment.",
+            "ea_status": live_status.status,
+            "positions": positions,
+            "terminal_connected": terminal_connected,
+            "artifact_available": artifact_available,
+            "artifact_hash_valid": artifact_hash_valid,
+            "artifact": {
+                "id": artifact.id,
+                "version": artifact.version,
+                "filename": artifact.filename,
+                "sha256": artifact.sha256,
+                "file_size": artifact.file_size,
+            },
+        }
+
     def deploy(
         self,
         ea_id: str,
-        version: str,
-        source_path: str,
-        target_path: str,
+        artifact_id: int,
     ):
-        source = Path(source_path).expanduser().resolve()
-        requested_target = Path(target_path).expanduser()
-        target = self._resolve_target(requested_target)
-
         instance = self.registry.get(ea_id)
 
         if instance is None:
             raise EADeploymentError(f"Unknown EA: {ea_id}")
 
+        artifact = self.artifact_store.get(artifact_id)
+
+        if artifact is None:
+            raise EADeploymentError(f"Artifact {artifact_id} does not exist.")
+
+        if artifact.ea_id != ea_id:
+            raise EADeploymentError(
+                f"Artifact {artifact_id} belongs to " f"{artifact.ea_id}, not {ea_id}."
+            )
+
+        source = Path(artifact.path).expanduser().resolve()
+
         if not source.is_file():
-            raise EADeploymentError(f"Source EX5 does not exist: {source}")
+            raise EADeploymentError(f"Artifact file does not exist: {source}")
 
         if source.suffix.lower() != ".ex5":
-            raise EADeploymentError("Deployment source must be an .ex5 file.")
+            raise EADeploymentError("Registered artifact is not an .ex5 file.")
 
-        # Read the live EA status before doing anything.
+        current_hash = self.calculate_sha256(source)
+
+        if current_hash != artifact.sha256:
+            raise EADeploymentError(
+                "Artifact hash mismatch. The registered artifact "
+                "has changed since it was stored."
+            )
+
+        # Read live EA status before doing anything.
         live_status = self.bridge.read_status(ea_id)
 
         if live_status is None:
-            raise EADeploymentError(
-                "EA telemetry is unavailable. " "Deployment aborted."
-            )
+            raise EADeploymentError("EA telemetry is unavailable. Deployment aborted.")
 
-        # Never restart an EA that currently owns a basket.
+        # Never restart an EA with active positions.
         if live_status.basket.positions > 0:
             raise EADeploymentError(
                 f"Deployment blocked: EA has "
                 f"{live_status.basket.positions} open positions."
             )
 
-        file_hash = self.calculate_sha256(source)
+        target = source
 
         deployment = self.deployment_store.create(
             ea_id=ea_id,
-            version=version,
+            version=artifact.version,
             source_path=str(source),
             target_path=str(target),
-            file_hash=file_hash,
+            file_hash=artifact.sha256,
         )
 
         backup: Path | None = None
@@ -127,19 +293,7 @@ class EADeploymentService:
         try:
             self.deployment_store.mark_deploying(deployment.id)
 
-            target.parent.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-
-            same_physical_file = False
-
-            try:
-                same_physical_file = source.samefile(target)
-            except FileNotFoundError:
-                same_physical_file = False
-
-            # Backup the currently installed EX5.
+            # Backup the currently installed artifact.
             if target.exists():
                 timestamp = int(time.time())
 
@@ -149,26 +303,41 @@ class EADeploymentService:
                     target,
                     backup,
                 )
-            # only copy when source and target are different
-            if not same_physical_file:
-                shutil.copy2(source, target)
 
-            # restart MT5/EA
+            if not source.samefile(target):
+                shutil.copy2(
+                    source,
+                    target,
+                )
+
+            # Restart MT5 / EA.
             self.lifecycle.stop(ea_id)
             self.lifecycle.start(ea_id)
 
-            status = self._wait_for_version(ea_id, version)
+            status = self._wait_for_version(
+                ea_id,
+                artifact.version,
+            )
 
-            self.registry.set_version(ea_id, version)
+            self.registry.set_version(
+                ea_id,
+                artifact.version,
+            )
 
-            self.instance_store.persist_version(ea_id, version)
+            self.instance_store.persist_version(
+                ea_id,
+                artifact.version,
+            )
 
             self.event_store.record(
                 ea_id=ea_id,
                 event_type="EA_DEPLOYED",
                 previous_status=live_status.status,
                 current_status=status.status,
-                message=(f"EA version {version} deployed and", f"Verified succesfully"),
+                message=(
+                    f"EA version {artifact.version} "
+                    f"deployed and verified successfully."
+                ),
             )
 
             return self.deployment_store.mark_applied(deployment.id)
