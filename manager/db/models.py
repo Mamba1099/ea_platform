@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -182,4 +183,60 @@ class EADeployment(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+
+
+class EAArtifact(Base):
+    __tablename__ = "ea_artifacts"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    ea_id: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        index=True,
+    )
+
+    version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    filename: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    path: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    sha256: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    file_size: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "ea_id",
+            "version",
+            "sha256",
+            name="uq_ea_artifact_version_hash",
+        ),
     )

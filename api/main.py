@@ -11,7 +11,24 @@ from manager.mt5_runtime import MT5Runtime
 from manager.db.event_store import EventStore
 from manager.db.database import SessionLocal
 from manager.db.instance_store import EAInstanceStore
+from manager.db.deployment_store import EADeploymentStore
+from manager.deployment.service import EADeploymentService, EADeploymentError
+from manager.db.artifact_store import EAArtifactStore
+from manager.artifacts.scanner import EAArtifactScanner
+from manager.artifacts.service import EAArtifactService
+from pydantic import BaseModel
 from manager.registry import create_registry
+
+
+class EADeploymentRequest(BaseModel):
+    version: str
+    source_path: str
+    target_path: str
+
+
+class EAArtifactRequest(BaseModel):
+    version: str
+    path: str
 
 
 @asynccontextmanager
@@ -50,6 +67,8 @@ runtime = MT5Runtime(
 bridge = EAFileBridge(IPC_ROOT)
 event_store = EventStore(SessionLocal)
 instance_store = EAInstanceStore(SessionLocal)
+deployment_store = EADeploymentStore(SessionLocal)
+artifact_store = EAArtifactStore(SessionLocal)
 lifecycle = EALifecycleController(
     registry,
     runtime,
@@ -62,6 +81,21 @@ monitor = EAMonitor(
     runtime,
     stale_threshold=10.0,
 )
+
+deployment_service = EADeploymentService(
+    registry=registry,
+    lifecycle=lifecycle,
+    bridge=bridge,
+    deployment_store=deployment_store,
+    instance_store=instance_store,
+    event_store=event_store,
+)
+
+artifact_service = EAArtifactService(
+    store=artifact_store,
+    scanner=EAArtifactScanner(),
+)
+
 watchdog = EAMonitorWatchdog(
     monitor,
     event_store,
@@ -327,6 +361,7 @@ def get_ea_events(ea_id: str, limit: int = 100):
         ],
     }
 
+
 @app.get("/api/db/eas")
 def get_persisted_eas():
     instances = instance_store.list_all()
@@ -344,13 +379,152 @@ def get_persisted_eas():
                 "status": instance.status,
                 "enabled": instance.enabled,
                 "last_seen": (
-                    instance.last_seen.isoformat()
-                    if instance.last_seen
-                    else None
+                    instance.last_seen.isoformat() if instance.last_seen else None
                 ),
                 "created_at": instance.created_at.isoformat(),
                 "updated_at": instance.updated_at.isoformat(),
             }
             for instance in instances
+        ],
+    }
+
+
+@app.post("/api/eas/{ea_id}/deploy")
+def deploy_ea(
+    ea_id: str,
+    request: EADeploymentRequest,
+):
+    get_ea_or_404(ea_id)
+
+    try:
+        deployment = deployment_service.deploy(
+            ea_id=ea_id,
+            version=request.version,
+            source_path=request.source_path,
+            target_path=request.target_path,
+        )
+
+    except EADeploymentError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+    return {
+        "success": True,
+        "deployment": {
+            "id": deployment.id,
+            "ea_id": deployment.ea_id,
+            "version": deployment.version,
+            "status": deployment.status,
+            "source_path": deployment.source_path,
+            "target_path": deployment.target_path,
+            "file_hash": deployment.file_hash,
+            "started_at": deployment.started_at.isoformat(),
+            "completed_at": (
+                deployment.completed_at.isoformat() if deployment.completed_at else None
+            ),
+        },
+    }
+
+
+@app.get("/api/eas/{ea_id}/deployments")
+def get_ea_deployments(
+    ea_id: str,
+    limit: int = 100,
+):
+    get_ea_or_404(ea_id)
+
+    limit = max(1, min(limit, 500))
+
+    deployments = deployment_store.list_for_ea(
+        ea_id,
+        limit,
+    )
+
+    return {
+        "ea_id": ea_id,
+        "deployments": [
+            {
+                "id": deployment.id,
+                "version": deployment.version,
+                "status": deployment.status,
+                "source_path": deployment.source_path,
+                "target_path": deployment.target_path,
+                "file_hash": deployment.file_hash,
+                "error_message": deployment.error_message,
+                "started_at": (deployment.started_at.isoformat()),
+                "completed_at": (
+                    deployment.completed_at.isoformat()
+                    if deployment.completed_at
+                    else None
+                ),
+            }
+            for deployment in deployments
+        ],
+    }
+
+
+@app.post("/api/eas/{ea_id}/artifacts")
+def register_artifact(
+    ea_id: str,
+    request: EAArtifactRequest,
+):
+    get_ea_or_404(ea_id)
+
+    try:
+        artifact = artifact_service.register(
+            ea_id=ea_id,
+            version=request.version,
+            path=request.path,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+    return {
+        "success": True,
+        "artifact": {
+            "id": artifact.id,
+            "ea_id": artifact.ea_id,
+            "version": artifact.version,
+            "filename": artifact.filename,
+            "path": artifact.path,
+            "sha256": artifact.sha256,
+            "file_size": artifact.file_size,
+            "created_at": artifact.created_at.isoformat(),
+        },
+    }
+
+
+@app.get("/api/eas/{ea_id}/artifacts")
+def get_ea_artifacts(
+    ea_id: str,
+    limit: int = 100,
+):
+    get_ea_or_404(ea_id)
+
+    limit = max(1, min(limit, 500))
+
+    artifacts = artifact_service.list_for_ea(
+        ea_id,
+        limit,
+    )
+
+    return {
+        "ea_id": ea_id,
+        "artifacts": [
+            {
+                "id": artifact.id,
+                "version": artifact.version,
+                "filename": artifact.filename,
+                "path": artifact.path,
+                "sha256": artifact.sha256,
+                "file_size": artifact.file_size,
+                "created_at": artifact.created_at.isoformat(),
+            }
+            for artifact in artifacts
         ],
     }

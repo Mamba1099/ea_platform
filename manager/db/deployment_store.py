@@ -59,9 +59,7 @@ class EADeploymentStore:
                 return None
 
             deployment.status = "APPLIED"
-            deployment.completed_at = (
-                datetime.now(timezone.utc)
-            )
+            deployment.completed_at = datetime.now(timezone.utc)
             deployment.error_message = None
 
             db.commit()
@@ -84,9 +82,7 @@ class EADeploymentStore:
                 return None
 
             deployment.status = "FAILED"
-            deployment.completed_at = (
-                datetime.now(timezone.utc)
-            )
+            deployment.completed_at = datetime.now(timezone.utc)
             deployment.error_message = error_message
 
             db.commit()

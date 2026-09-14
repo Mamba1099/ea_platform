@@ -97,3 +97,24 @@ class EAInstanceStore:
             statement = select(EAInstance).order_by(EAInstance.ea_id)
 
             return list(db.scalars(statement).all())
+
+    def persist_version(
+        self,
+        ea_id: str,
+        version: str,
+    ) -> EAInstance | None:
+        with self.session_factory() as db:
+            statement = select(EAInstance).where(EAInstance.ea_id == ea_id)
+
+            row = db.scalar(statement)
+
+            if row is None:
+                return None
+
+            row.version = version
+            row.updated_at = datetime.now(timezone.utc)
+
+            db.commit()
+            db.refresh(row)
+
+            return row

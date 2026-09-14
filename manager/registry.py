@@ -169,6 +169,12 @@ class EARegistry:
 
         return [asdict(instance) for instance in self._instances.values()]
 
+    def set_version(self, ea_id: str, version: str) -> None:
+        instance = self.get(ea_id)
+
+        if instance is None:
+            raise KeyError(f"Unknown EA: {ea_id}")
+
 
 # =============================================================
 # INITIAL REGISTRY
