@@ -17,9 +17,7 @@ config = context.config
 database_url = os.getenv("DIRECT_DATABASE_URL")
 
 if not database_url:
-    raise RuntimeError(
-        "DIRECT_DATABASE_URL is not configured."
-    )
+    raise RuntimeError("DIRECT_DATABASE_URL is not configured.")
 
 database_url = database_url.replace(
     "postgresql://",

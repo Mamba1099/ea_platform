@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from manager.db.database import Base
@@ -117,4 +124,62 @@ class EAEvent(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
         index=True,
+    )
+
+
+class EADeployment(Base):
+    __tablename__ = "ea_deployments"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    ea_id: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        index=True,
+    )
+
+    version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    source_path: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    target_path: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    file_hash: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="PENDING",
+    )
+
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
