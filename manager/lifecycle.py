@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from threading import Lock
-
+import time
 from manager.ipc.file_bridge import EAFileBridge
 from manager.ipc.protocol import CommandResult, EACommand
 from manager.mt5_runtime import MT5Runtime
@@ -52,10 +52,6 @@ class EALifecycleController:
         self.bridge = bridge
         self._lock = Lock()
 
-    # =========================================================
-    # INTERNAL COMMAND HANDLING
-    # =========================================================
-
     def _send_ea_command(
         self,
         ea_id: str,
@@ -92,9 +88,48 @@ class EALifecycleController:
 
         return ack
 
-    # =========================================================
-    # START
-    # =========================================================
+    def _wait_for_ea_ready(
+        self,
+        ea_id: str,
+        previous_status_mtime: float | None = None,
+        timeout: float = 30.0,
+        poll_interval: float = 0.5,
+    ) -> bool:
+        """
+        Wait until the EA has published fresh telemetry after
+        the MT5 runtime has been started.
+        """
+
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            try:
+                status_path = self.bridge._status_file(ea_id)
+
+                if not status_path.exists():
+                    time.sleep(poll_interval)
+                    continue
+
+                current_mtime = status_path.stat().st_mtime
+
+                if (
+                    previous_status_mtime is not None
+                    and current_mtime <= previous_status_mtime
+                ):
+                    time.sleep(poll_interval)
+                    continue
+
+                status = self.bridge.read_status(ea_id)
+
+                if status is not None and status.terminal_connected:
+                    return True
+
+            except OSError:
+                pass
+
+            time.sleep(poll_interval)
+
+        return False
 
     def start(self, ea_id: str):
         """
@@ -107,6 +142,8 @@ class EALifecycleController:
             STARTING
                 ↓
             MT5 running
+                ↓
+            EA telemetry ready
                 ↓
             EA START command
                 ↓
@@ -130,11 +167,30 @@ class EALifecycleController:
             )
 
             try:
+                previous_status_mtime = None
+
+                try:
+                    status_path = self.bridge._status_file(ea_id)
+                    if status_path.exists():
+                        previous_status_mtime = status_path.stat().st_mtime
+                except OSError:
+                    previous_status_mtime = None
+
                 pid = self.runtime.start()
+                if not self._wait_for_ea_ready(
+                    ea_id,
+                    previous_status_mtime=previous_status_mtime,
+                    timeout=30.0,
+                    poll_interval=0.5,
+                ):
+                    raise RuntimeError(
+                        f"EA {ea_id} did not become ready " f"after MT5 startup."
+                    )
 
                 self._send_ea_command(
                     ea_id,
                     EACommand.START,
+                    timeout=15.0,
                 )
 
                 self.registry.set_enabled(
@@ -165,10 +221,6 @@ class EALifecycleController:
                 )
 
                 raise RuntimeError(f"Failed to start EA {ea_id}: {exc}") from exc
-
-    # =========================================================
-    # PAUSE
-    # =========================================================
 
     def pause(self, ea_id: str):
         """
@@ -201,10 +253,6 @@ class EALifecycleController:
             self.registry.heartbeat(ea_id)
 
             return self.registry.get(ea_id)
-
-    # =========================================================
-    # RESUME
-    # =========================================================
 
     def resume(self, ea_id: str):
         """
@@ -250,10 +298,6 @@ class EALifecycleController:
             self.registry.heartbeat(ea_id)
 
             return self.registry.get(ea_id)
-
-    # =========================================================
-    # STOP
-    # =========================================================
 
     def stop(self, ea_id: str):
         """
@@ -317,9 +361,57 @@ class EALifecycleController:
 
                 raise RuntimeError(f"Failed to stop EA {ea_id}: {exc}") from exc
 
-    # =========================================================
-    # CLOSE BASKET
-    # =========================================================
+    def restart_runtime_for_deployment(self, ea_id):
+        """
+        Stop the entire MT5 runtime for a deployment restart.
+
+        Unlike the normal stop() operation, deployment does not send
+        an EA STOP command first. The MT5 process itself is being
+        restarted, so sending an EA command immediately before killing
+        the terminal can leave an orphaned IPC command.
+        """
+        with self._lock:
+            ea = self.registry.get(ea_id)
+
+            if ea is None:
+                raise RuntimeError(f"Unknown EA: {ea_id}")
+
+            self.registry.set_status(
+                ea_id,
+                EAStatus.STOPPING.value,
+            )
+
+            try:
+                if self.runtime.is_running():
+                    stopped = self.runtime.stop()
+
+                    if not stopped:
+                        raise RuntimeError("MT5 process did not stop cleanly.")
+
+                self.registry.set_enabled(
+                    ea_id,
+                    False,
+                )
+
+                self.registry.set_status(
+                    ea_id,
+                    EAStatus.STOPPED.value,
+                )
+
+                return True
+
+            except Exception as exc:
+                self.registry.set_enabled(
+                    ea_id,
+                    False,
+                )
+
+                self.registry.set_status(
+                    ea_id,
+                    EAStatus.ERROR.value,
+                )
+
+                raise RuntimeError(f"Failed to stop MT5 for deployment: {exc}") from exc
 
     def close_basket(self, ea_id: str):
         """
@@ -352,10 +444,6 @@ class EALifecycleController:
                 EACommand.CLOSE_BASKET,
             )
 
-    # =========================================================
-    # STATUS
-    # =========================================================
-
     def status(self, ea_id: str):
         """
         Return the locally cached registry state.
@@ -385,10 +473,6 @@ class EALifecycleController:
         )
 
         return self.registry.get(ea_id)
-
-    # =========================================================
-    # HEALTH
-    # =========================================================
 
     def health(self, ea_id: str) -> dict:
         """

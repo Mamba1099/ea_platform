@@ -12,6 +12,7 @@ from manager.db.instance_store import EAInstanceStore
 from manager.ipc.file_bridge import EAFileBridge
 from manager.lifecycle import EALifecycleController
 from manager.registry import EARegistry
+from manager.db.installation_store import EAInstallationStore
 
 
 class EADeploymentError(RuntimeError):
@@ -25,6 +26,7 @@ class EADeploymentService:
         lifecycle: EALifecycleController,
         bridge: EAFileBridge,
         artifact_store: EAArtifactStore,
+        installation_store: EAInstallationStore,
         deployment_store: EADeploymentStore,
         instance_store: EAInstanceStore,
         event_store: EventStore,
@@ -33,6 +35,7 @@ class EADeploymentService:
         self.lifecycle = lifecycle
         self.bridge = bridge
         self.artifact_store = artifact_store
+        self.installation_store = installation_store
         self.deployment_store = deployment_store
         self.instance_store = instance_store
         self.event_store = event_store
@@ -233,6 +236,7 @@ class EADeploymentService:
         self,
         ea_id: str,
         artifact_id: int,
+        installation_id: int,
     ):
         instance = self.registry.get(ea_id)
 
@@ -249,6 +253,20 @@ class EADeploymentService:
                 f"Artifact {artifact_id} belongs to " f"{artifact.ea_id}, not {ea_id}."
             )
 
+        installation = self.installation_store.get(installation_id)
+
+        if installation is None:
+            raise EADeploymentError(f"Installation {installation_id} does not exist.")
+
+        if installation.ea_id != ea_id:
+            raise EADeploymentError(
+                f"Installation {installation_id} belongs to "
+                f"{installation.ea_id}, not {ea_id}."
+            )
+
+        if not installation.active:
+            raise EADeploymentError(f"Installation {installation_id} is inactive.")
+
         source = Path(artifact.path).expanduser().resolve()
 
         if not source.is_file():
@@ -257,28 +275,35 @@ class EADeploymentService:
         if source.suffix.lower() != ".ex5":
             raise EADeploymentError("Registered artifact is not an .ex5 file.")
 
+        # Verify the registered artifact has not changed.
         current_hash = self.calculate_sha256(source)
 
         if current_hash != artifact.sha256:
             raise EADeploymentError(
-                "Artifact hash mismatch. The registered artifact "
-                "has changed since it was stored."
+                "Artifact hash mismatch. The file changed " "after it was registered."
             )
 
-        # Read live EA status before doing anything.
+        # Resolve the installation's EX5 target.
+        requested_target = (
+            Path(installation.experts_directory) / installation.executable_name
+        )
+
+        target = requested_target.expanduser()
+
+        # Read current EA state before deployment.
         live_status = self.bridge.read_status(ea_id)
 
         if live_status is None:
-            raise EADeploymentError("EA telemetry is unavailable. Deployment aborted.")
+            raise EADeploymentError(
+                "EA telemetry is unavailable. " "Deployment aborted."
+            )
 
-        # Never restart an EA with active positions.
         if live_status.basket.positions > 0:
             raise EADeploymentError(
                 f"Deployment blocked: EA has "
-                f"{live_status.basket.positions} open positions."
+                f"{live_status.basket.positions} "
+                f"open position(s)."
             )
-
-        target = source
 
         deployment = self.deployment_store.create(
             ea_id=ea_id,
@@ -293,7 +318,19 @@ class EADeploymentService:
         try:
             self.deployment_store.mark_deploying(deployment.id)
 
-            # Backup the currently installed artifact.
+            target.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            same_physical_file = False
+
+            if target.exists():
+                try:
+                    same_physical_file = source.samefile(target)
+                except FileNotFoundError:
+                    same_physical_file = False
+
             if target.exists():
                 timestamp = int(time.time())
 
@@ -304,21 +341,48 @@ class EADeploymentService:
                     backup,
                 )
 
-            if not source.samefile(target):
+            if not same_physical_file:
                 shutil.copy2(
                     source,
                     target,
                 )
 
+            status = self.bridge.read_status(ea_id)
+
+            if status is None:
+                raise EADeploymentError(
+                    f"{ea_id} telemetry is unavailable."
+                )
+
+            if not status.terminal_connected:
+                raise EADeploymentError(
+                    f"EA {ea_id} terminal is not connected."
+                )
+
+            if status.basket.positions > 0:
+                raise EADeploymentError(
+                    f"Deployment blocked: EA has "
+                    f"{status.basket.positions} open position(s)."
+                )
             # Restart MT5 / EA.
-            self.lifecycle.stop(ea_id)
+            self.lifecycle.restart_runtime_for_deployment(ea_id)
             self.lifecycle.start(ea_id)
 
+            # Verify the EA reports the deployed version.
             status = self._wait_for_version(
                 ea_id,
                 artifact.version,
             )
 
+            # Verify the EA is actually healthy after restart.
+            if not status.terminal_connected:
+                raise EADeploymentError(
+                    "EA reported the expected version but "
+                    "the terminal is not connected."
+                )
+
+            # Update runtime registry only after successful
+            # verification.
             self.registry.set_version(
                 ea_id,
                 artifact.version,
@@ -343,9 +407,10 @@ class EADeploymentService:
             return self.deployment_store.mark_applied(deployment.id)
 
         except Exception as exc:
+            # Attempt rollback.
             if backup is not None and backup.exists():
                 try:
-                    self.lifecycle.stop(ea_id)
+                    self.lifecycle.restart_runtime_for_deployment(ea_id)
 
                     shutil.copy2(
                         backup,

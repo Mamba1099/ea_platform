@@ -210,6 +210,13 @@ class EAFileBridge:
 
             time.sleep(poll_interval)
 
+        command_path = self._commands_dir(ea_id) / f"{request_id}.json"
+
+        try:
+            command_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
         raise FileBridgeError(
             f"Timed out waiting for EA ACK: " f"ea_id={ea_id}, request_id={request_id}"
         )

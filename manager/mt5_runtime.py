@@ -127,6 +127,7 @@ class MT5Runtime:
             command = [
                 self.wine_binary,
                 str(self.terminal_path),
+                r"/config:C:\Program Files\MetaTrader 5\Config\EAPlatform_AI_Basket.ini",
             ]
 
             try:
