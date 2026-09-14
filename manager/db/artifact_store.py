@@ -34,6 +34,13 @@ class EAArtifactStore:
 
             return artifact
 
+    def get(
+        self,
+        artifact_id: int,
+    ) -> EAArtifact | None:
+        with self.session_factory() as db:
+            return db.get(EAArtifact, artifact_id)
+
     def get_by_version(
         self,
         ea_id: str,

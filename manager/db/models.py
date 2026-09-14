@@ -240,3 +240,58 @@ class EAArtifact(Base):
             name="uq_ea_artifact_version_hash",
         ),
     )
+
+
+class EAInstallation(Base):
+    __tablename__ = "ea_installations"
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    ea_id: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+        index=True,
+    )
+
+    terminal_name: Mapped[str] = mapped_column(
+        String(200),
+        nullable=False,
+    )
+
+    terminal_path: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    experts_directory: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    executable_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

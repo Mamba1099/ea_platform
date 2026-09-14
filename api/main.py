@@ -16,17 +16,30 @@ from manager.deployment.service import EADeploymentService, EADeploymentError
 from manager.db.artifact_store import EAArtifactStore
 from manager.artifacts.scanner import EAArtifactScanner
 from manager.artifacts.service import EAArtifactService
+from manager.db.installation_store import EAInstallationStore
+from manager.installations.service import (
+    EAInstallationError,
+    EAInstallationService,
+)
 from pydantic import BaseModel
 from manager.registry import create_registry
 
 
 class EADeploymentRequest(BaseModel):
     artifact_id: int
+    installation_id: int
 
 
 class EAArtifactRequest(BaseModel):
     version: str
     path: str
+
+
+class EAInstallationRequest(BaseModel):
+    terminal_name: str
+    terminal_path: str
+    experts_directory: str
+    executable_name: str
 
 
 @asynccontextmanager
@@ -67,6 +80,8 @@ event_store = EventStore(SessionLocal)
 instance_store = EAInstanceStore(SessionLocal)
 deployment_store = EADeploymentStore(SessionLocal)
 artifact_store = EAArtifactStore(SessionLocal)
+installation_store = EAInstallationStore(SessionLocal)
+
 lifecycle = EALifecycleController(
     registry,
     runtime,
@@ -85,6 +100,7 @@ deployment_service = EADeploymentService(
     lifecycle=lifecycle,
     bridge=bridge,
     artifact_store=artifact_store,
+    installation_store=instance_store,
     deployment_store=deployment_store,
     instance_store=instance_store,
     event_store=event_store,
@@ -93,6 +109,11 @@ deployment_service = EADeploymentService(
 artifact_service = EAArtifactService(
     store=artifact_store,
     scanner=EAArtifactScanner(),
+)
+
+installation_service = EAInstallationService(
+    registry=registry,
+    store=installation_store,
 )
 
 watchdog = EAMonitorWatchdog(
@@ -399,6 +420,7 @@ def deploy_ea(
         deployment = deployment_service.deploy(
             ea_id=ea_id,
             artifact_id=request.artifact_id,
+            installation_id=request.installation_id,
         )
 
     except EADeploymentError as exc:
@@ -414,16 +436,15 @@ def deploy_ea(
             "ea_id": deployment.ea_id,
             "version": deployment.version,
             "status": deployment.status,
-            "source_path": deployment.source_path,
-            "target_path": deployment.target_path,
             "file_hash": deployment.file_hash,
             "started_at": deployment.started_at.isoformat(),
             "completed_at": (
-                deployment.completed_at.isoformat() if deployment.completed_at else None
+                deployment.completed_at.isoformat()
+                if deployment.completed_at
+                else None
             ),
         },
     }
-
 
 @app.get("/api/eas/{ea_id}/deployments/preflight")
 def deployment_preflight(
@@ -436,6 +457,7 @@ def deployment_preflight(
         ea_id=ea_id,
         artifact_id=artifact_id,
     )
+
 
 @app.get("/api/eas/{ea_id}/artifacts/{artifact_id}")
 def get_ea_artifact(
@@ -568,5 +590,67 @@ def get_ea_artifacts(
                 "created_at": artifact.created_at.isoformat(),
             }
             for artifact in artifacts
+        ],
+    }
+
+
+@app.post("/api/eas/{ea_id}/installations")
+def register_ea_installation(
+    ea_id: str,
+    request: EAInstallationRequest,
+):
+    get_ea_or_404(ea_id)
+
+    try:
+        installation = installation_service.register(
+            ea_id=ea_id,
+            terminal_name=request.terminal_name,
+            terminal_path=request.terminal_path,
+            experts_directory=request.experts_directory,
+            executable_name=request.executable_name,
+        )
+    except EAInstallationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+    return {
+        "success": True,
+        "installation": {
+            "id": installation.id,
+            "ea_id": installation.ea_id,
+            "terminal_name": installation.terminal_name,
+            "terminal_path": installation.terminal_path,
+            "experts_directory": installation.experts_directory,
+            "executable_name": installation.executable_name,
+            "active": installation.active,
+            "created_at": installation.created_at.isoformat(),
+        },
+    }
+
+
+@app.get("/api/eas/{ea_id}/installations")
+def get_ea_installations(
+    ea_id: str,
+):
+    get_ea_or_404(ea_id)
+
+    installations = installation_service.list_for_ea(ea_id)
+
+    return {
+        "ea_id": ea_id,
+        "installations": [
+            {
+                "id": item.id,
+                "terminal_name": item.terminal_name,
+                "terminal_path": item.terminal_path,
+                "experts_directory": item.experts_directory,
+                "executable_name": item.executable_name,
+                "active": item.active,
+                "created_at": item.created_at.isoformat(),
+                "updated_at": item.updated_at.isoformat(),
+            }
+            for item in installations
         ],
     }
