@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+:root {
+  --background: #020817;
+  --foreground: #f8fafc;
+  --muted: #94a3b8;
+  --panel: rgba(5, 15, 31, 0.78);
+  --panel-strong: rgba(3, 11, 24, 0.94);
+  --line: rgba(59, 130, 246, 0.22);
+  --blue: #38bdf8;
+  --blue-strong: #0ea5e9;
+  --purple: #8b5cf6;
+}
+
+* { box-sizing: border-box; }
+html { min-height: 100%; }
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--foreground);
+  background:
+    radial-gradient(circle at 18% 12%, rgba(14, 165, 233, 0.12), transparent 28%),
+    radial-gradient(circle at 84% 10%, rgba(59, 130, 246, 0.10), transparent 25%),
+    linear-gradient(180deg, #030712 0%, #020817 55%, #010511 100%);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button, a { -webkit-tap-highlight-color: transparent; }
+
+.glass {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 45px rgba(0, 0, 0, 0.28), inset 0 1px rgba(255, 255, 255, 0.025);
+  backdrop-filter: blur(18px);
+}
+
+.glow-border {
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.18),
+    0 0 34px rgba(14, 165, 233, 0.10),
+    inset 0 1px rgba(255, 255, 255, 0.035);
+}
+
+.safe-bottom { padding-bottom: max(92px, env(safe-area-inset-bottom)); }
