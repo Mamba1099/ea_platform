@@ -350,14 +350,10 @@ class EADeploymentService:
             status = self.bridge.read_status(ea_id)
 
             if status is None:
-                raise EADeploymentError(
-                    f"{ea_id} telemetry is unavailable."
-                )
+                raise EADeploymentError(f"{ea_id} telemetry is unavailable.")
 
             if not status.terminal_connected:
-                raise EADeploymentError(
-                    f"EA {ea_id} terminal is not connected."
-                )
+                raise EADeploymentError(f"EA {ea_id} terminal is not connected.")
 
             if status.basket.positions > 0:
                 raise EADeploymentError(
@@ -381,8 +377,6 @@ class EADeploymentService:
                     "the terminal is not connected."
                 )
 
-            # Update runtime registry only after successful
-            # verification.
             self.registry.set_version(
                 ea_id,
                 artifact.version,

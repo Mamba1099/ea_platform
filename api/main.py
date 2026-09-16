@@ -22,6 +22,8 @@ from manager.installations.service import (
     EAInstallationService,
 )
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from manager.auth.router import router as auth_router
 from manager.registry import create_registry
 
 
@@ -61,10 +63,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="EA Management Platform", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://192.168.100.120:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(auth_router)
 
-# ============================================================
-# PLATFORM COMPONENTS
-# ============================================================
 
 registry = create_registry()
 
@@ -124,11 +135,6 @@ watchdog = EAMonitorWatchdog(
 )
 
 
-# ============================================================
-# HELPERS
-# ============================================================
-
-
 def get_ea_or_404(ea_id: str):
     try:
         return registry.get(ea_id)
@@ -165,11 +171,6 @@ def status_payload(ea_id: str) -> dict:
     }
 
 
-# ============================================================
-# ROOT / HEALTH
-# ============================================================
-
-
 @app.get("/")
 def root():
     return {
@@ -186,11 +187,6 @@ def platform_health():
         "mt5": runtime.heartbeat(),
         "eas": monitor.health_all(),
     }
-
-
-# ============================================================
-# EA DISCOVERY
-# ============================================================
 
 
 @app.get("/api/eas")
@@ -223,11 +219,6 @@ def get_ea_health(ea_id: str):
             "message": health.message,
         },
     }
-
-
-# ============================================================
-# LIFECYCLE CONTROLS
-# ============================================================
 
 
 @app.post("/api/eas/{ea_id}/start")
